@@ -20,7 +20,7 @@ An AI-powered financial analysis tool that provides insights into company financ
 3. Create a `.env` file with your API keys:
    ```
    OPENAI_API_KEY=your_key_here
-   ALPHA_VANTAGE_API_KEY=your_key_here
+   FMP_API_KEY=your_key_here
    ```
 4. Run the app:
    ```bash
