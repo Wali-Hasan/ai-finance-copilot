@@ -1,10 +1,9 @@
 """
 Data loading module for financial data from various sources.
 """
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List, Tuple
 import pandas as pd
-import yfinance as yf
-from alpha_vantage.fundamentaldata import FundamentalData
+import requests
 import os
 from dotenv import load_dotenv
 import logging
@@ -18,7 +17,7 @@ print("="*50)
 print("Debug Information:")
 print(f"Current directory: {os.getcwd()}")
 print(f"Files in current directory: {os.listdir('.')}")
-print(f"Alpha Vantage key present: {bool(os.getenv('ALPHA_VANTAGE_API_KEY'))}")
+print(f"FMP API key present: {bool(os.getenv('FMP_API_KEY'))}")
 print(f"Dotenv file exists: {os.path.exists('.env')}")
 print("="*50)
 
@@ -26,195 +25,116 @@ load_dotenv()
 
 # Check again after load_dotenv
 print("After load_dotenv:")
-print(f"Alpha Vantage key present: {bool(os.getenv('ALPHA_VANTAGE_API_KEY'))}")
+print(f"FMP API key present: {bool(os.getenv('FMP_API_KEY'))}")
 print("="*50)
 
-class FinancialDataLoader:
+class DataLoader:
     def __init__(self):
-        """Initialize the data loader with API clients."""
-        self.alpha_vantage_key = os.getenv('ALPHA_VANTAGE_API_KEY')
-        self.fd = FundamentalData(key=self.alpha_vantage_key) if self.alpha_vantage_key else None
-
-    def load_from_csv(self, file_path: str) -> Dict[str, pd.DataFrame]:
-        """
-        Load financial data from a CSV file.
-        Supports multiple CSV formats:
-        1. Single CSV with 'type' column indicating statement type
-        2. Single CSV with predefined columns for each statement
-        3. Single CSV with date-based financial data
+        """Initialize the data loader with API configuration."""
+        self.fmp_key = os.getenv('FMP_API_KEY')
+        self.base_url = 'https://financialmodelingprep.com/api/v3'
         
-        Args:
-            file_path: Path to the CSV file
-            
-        Returns:
-            Dict containing income_statement and balance_sheet DataFrames
-        """
+        # Debug information
+        logger.info("Current directory: " + str(os.getcwd()))
+        logger.info("Files in current directory: " + str(os.listdir('.')))
+        logger.info("FMP API key present: " + str(bool(self.fmp_key)))
+        logger.info("Dotenv file exists: " + str(os.path.exists('.env')))
+
+    def get_financial_data(self, ticker: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+        """Get financial data for a given ticker symbol."""
         try:
+            logger.info("Fetching data for ticker: " + str(ticker))
+            
+            # Fetch income statement data
+            income_stmt_url = self.base_url + "/income-statement/" + str(ticker) + "?apikey=" + str(self.fmp_key)
+            income_response = requests.get(income_stmt_url)
+            income_data = income_response.json()
+            
+            if not income_data or not isinstance(income_data, list):
+                raise ValueError("Invalid or empty income statement data for " + str(ticker))
+            
+            # Debug income statement data
+            logger.info("First row keys: " + str(list(income_data[0].keys())))
+            logger.info("Revenue value type: " + str(type(income_data[0].get('revenue', 'N/A'))))
+            logger.info("Revenue value: " + str(income_data[0].get('revenue', 'N/A')))
+            
+            # Fetch balance sheet data
+            balance_sheet_url = self.base_url + "/balance-sheet-statement/" + str(ticker) + "?apikey=" + str(self.fmp_key)
+            balance_response = requests.get(balance_sheet_url)
+            balance_data = balance_response.json()
+            
+            if not balance_data or not isinstance(balance_data, list):
+                raise ValueError("Invalid or empty balance sheet data for " + str(ticker))
+            
+            # Debug balance sheet data
+            logger.info("First row keys: " + str(list(balance_data[0].keys())))
+            
+            # Convert to DataFrames
+            income_stmt = pd.DataFrame(income_data)
+            balance_sheet = pd.DataFrame(balance_data)
+            
+            # Set date as index
+            income_stmt['date'] = pd.to_datetime(income_stmt['date'])
+            balance_sheet['date'] = pd.to_datetime(balance_sheet['date'])
+            income_stmt.set_index('date', inplace=True)
+            balance_sheet.set_index('date', inplace=True)
+            
+            # Debug DataFrame info
+            logger.info("Income Statement columns: " + str(income_stmt.columns.tolist()))
+            logger.info("Income Statement dtypes:\n" + str(income_stmt.dtypes))
+            logger.info("Sample revenue data:\n" + str(income_stmt['revenue'] if 'revenue' in income_stmt.columns else 'No revenue column'))
+            
+            return income_stmt, balance_sheet
+            
+        except Exception as e:
+            logger.error("Error fetching data: " + str(e))
+            raise ValueError("Could not fetch data for " + str(ticker) + ". Error: " + str(e))
+
+    def load_from_csv(self, file_path: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+        """Load financial data from a CSV file."""
+        try:
+            # Read CSV file
             df = pd.read_csv(file_path)
             
-            # Case 1: CSV has a 'type' column
-            if 'type' in df.columns:
-                income_stmt = df[df['type'] == 'income_statement'].copy()
-                balance_sheet = df[df['type'] == 'balance_sheet'].copy()
-                return {
-                    'income_statement': income_stmt,
-                    'balance_sheet': balance_sheet
-                }
+            # Basic validation
+            required_columns = ['date', 'revenue', 'net_income', 'assets', 'liabilities']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                raise ValueError(f"Error processing CSV file: Missing required columns: {', '.join(missing_columns)}.\n\nPlease ensure your CSV contains these columns: {', '.join(required_columns)}")
             
-            # Case 2: Try to identify statement type by common column names
-            income_cols = ['revenue', 'sales', 'net_income', 'operating_income', 'gross_profit']
-            balance_cols = ['assets', 'liabilities', 'equity', 'cash', 'inventory']
+            # Split into income statement and balance sheet
+            income_cols = ['date', 'revenue', 'net_income', 'operating_income', 'gross_profit']
+            balance_cols = ['date', 'assets', 'liabilities', 'equity', 'current_assets', 'current_liabilities']
             
-            # Convert column names to lowercase for matching
-            df.columns = df.columns.str.lower()
+            income_stmt = df[income_cols].copy()
+            balance_sheet = df[balance_cols].copy()
             
-            # Check which columns belong to which statement
-            is_income = any(col in df.columns for col in income_cols)
-            is_balance = any(col in df.columns for col in balance_cols)
+            # Set date as index
+            income_stmt['date'] = pd.to_datetime(income_stmt['date'])
+            balance_sheet['date'] = pd.to_datetime(balance_sheet['date'])
+            income_stmt.set_index('date', inplace=True)
+            balance_sheet.set_index('date', inplace=True)
             
-            if is_income and is_balance:
-                # Split into two dataframes based on column types
-                income_cols_present = [col for col in df.columns if any(ic in col for ic in income_cols)]
-                balance_cols_present = [col for col in df.columns if any(bc in col for bc in balance_cols)]
-                
-                income_stmt = df[income_cols_present].copy()
-                balance_sheet = df[balance_cols_present].copy()
-            else:
-                # Case 3: Assume all numeric columns are financial data
-                numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
-                income_stmt = df[numeric_cols].copy()
-                balance_sheet = df[numeric_cols].copy()
+            # Rename columns to match API format
+            income_stmt = income_stmt.rename(columns={
+                'net_income': 'netIncome',
+                'operating_income': 'operatingIncome',
+                'gross_profit': 'grossProfit'
+            })
             
-            # Ensure DataFrames have an index
-            if not isinstance(income_stmt.index, pd.DatetimeIndex):
-                try:
-                    # Try to find a date column
-                    date_cols = df.columns[df.columns.str.contains('date|year|period', case=False)]
-                    if len(date_cols) > 0:
-                        date_col = date_cols[0]
-                        income_stmt.index = pd.to_datetime(df[date_col])
-                        balance_sheet.index = pd.to_datetime(df[date_col])
-                    else:
-                        # Create a default index
-                        income_stmt.index = pd.date_range(end=pd.Timestamp.now(), periods=len(income_stmt), freq='Y')
-                        balance_sheet.index = income_stmt.index
-                except:
-                    # If date conversion fails, use default index
-                    income_stmt.index = pd.date_range(end=pd.Timestamp.now(), periods=len(income_stmt), freq='Y')
-                    balance_sheet.index = income_stmt.index
+            balance_sheet = balance_sheet.rename(columns={
+                'assets': 'totalAssets',
+                'liabilities': 'totalLiabilities',
+                'equity': 'totalEquity',
+                'current_assets': 'totalCurrentAssets',
+                'current_liabilities': 'totalCurrentLiabilities'
+            })
             
-            return {
-                'income_statement': income_stmt,
-                'balance_sheet': balance_sheet
-            }
+            return income_stmt, balance_sheet
             
         except Exception as e:
-            raise ValueError(f"Error processing CSV file: {str(e)}\n\nPlease ensure your CSV contains financial statement data with appropriate column names.")
-
-    def load_from_ticker(self, ticker: str) -> Dict[str, pd.DataFrame]:
-        """
-        Load financial data for a given ticker using Yahoo Finance.
-        
-        Args:
-            ticker: Stock ticker symbol (e.g., 'AAPL')
-            
-        Returns:
-            Dict containing income_statement and balance_sheet DataFrames
-        """
-        logger.info(f"Fetching data for ticker: {ticker}")
-        try:
-            # Try to download info first to validate ticker
-            stock = yf.Ticker(ticker)
-            try:
-                info = stock.info
-                if not info:
-                    raise ValueError(f"No information found for ticker {ticker}")
-                logger.info(f"Successfully validated ticker {ticker}")
-            except Exception as e:
-                logger.error(f"Error validating ticker: {str(e)}")
-                raise ValueError(f"Invalid ticker symbol: {ticker}")
-
-            # Try multiple methods to get financial statements
-            logger.info("Fetching financial statements from Yahoo Finance")
-            income_stmt = None
-            balance_sheet = None
-
-            # Method 1: Try income statement
-            for _ in range(3):  # Try up to 3 times
-                try:
-                    income_stmt = stock.income_stmt
-                    if income_stmt is not None and not income_stmt.empty:
-                        break
-                except:
-                    try:
-                        income_stmt = stock.financials
-                        if income_stmt is not None and not income_stmt.empty:
-                            break
-                    except:
-                        pass
-                logger.info("Retrying income statement fetch...")
-
-            # Method 2: Try balance sheet
-            for _ in range(3):  # Try up to 3 times
-                try:
-                    balance_sheet = stock.balance_sheet
-                    if balance_sheet is not None and not balance_sheet.empty:
-                        break
-                except:
-                    try:
-                        balance_sheet = stock.get_balance_sheet()
-                        if balance_sheet is not None and not balance_sheet.empty:
-                            break
-                    except:
-                        pass
-                logger.info("Retrying balance sheet fetch...")
-
-            logger.info(f"Income statement fetched: {not income_stmt is None}")
-            if income_stmt is not None:
-                logger.info(f"Income statement shape: {income_stmt.shape}")
-            
-            logger.info(f"Balance sheet fetched: {not balance_sheet is None}")
-            if balance_sheet is not None:
-                logger.info(f"Balance sheet shape: {balance_sheet.shape}")
-            
-            # Clean and process the data
-            income_stmt = income_stmt.T if income_stmt is not None else pd.DataFrame()
-            balance_sheet = balance_sheet.T if balance_sheet is not None else pd.DataFrame()
-            
-            logger.info(f"After processing - Income statement empty: {income_stmt.empty}, Balance sheet empty: {balance_sheet.empty}")
-            
-            # Only try Alpha Vantage if we got absolutely no data from Yahoo
-            if income_stmt.empty and balance_sheet.empty:
-                logger.warning("No data from Yahoo Finance, trying Alpha Vantage as fallback")
-                if self.fd:
-                    logger.info("Fetching from Alpha Vantage")
-                    try:
-                        income_stmt, _ = self.fd.get_income_statement_annual(ticker)
-                        balance_sheet, _ = self.fd.get_balance_sheet_annual(ticker)
-                        
-                        income_stmt = pd.DataFrame(income_stmt)
-                        balance_sheet = pd.DataFrame(balance_sheet)
-                        logger.info("Successfully fetched data from Alpha Vantage")
-                    except Exception as e:
-                        logger.error(f"Alpha Vantage error details: {str(e)}")
-                        raise ValueError(f"Could not fetch data. Yahoo Finance returned no data and Alpha Vantage rate limit reached. Try again tomorrow or use a different ticker.")
-                else:
-                    raise ValueError("No data available from Yahoo Finance and Alpha Vantage is not configured")
-            
-            # Convert any string numbers to float
-            for df in [income_stmt, balance_sheet]:
-                for col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            logger.info("Successfully processed financial data")
-            return {
-                'income_statement': income_stmt,
-                'balance_sheet': balance_sheet
-            }
-            
-        except Exception as e:
-            logger.error(f"Error loading ticker data: {str(e)}")
-            raise ValueError(f"Failed to load data for ticker {ticker}: {str(e)}")
+            logger.error("Error loading CSV data: " + str(e))
+            return None, None
 
     def validate_data(self, data: Dict[str, pd.DataFrame]) -> bool:
         """
@@ -250,4 +170,76 @@ class FinancialDataLoader:
             
         except Exception as e:
             logger.error(f"Error validating data: {str(e)}")
-            return False 
+            return False
+
+    def get_trend_data(self) -> Dict[str, pd.Series]:
+        """Get historical trend data for key metrics."""
+        trend_data = {}
+        
+        # Try to get trend data for each metric
+        metrics_to_fetch = {
+            'Revenue': {'variations': ['totalRevenue', 'revenue', 'total revenue', 'sales', 'total sales'], 'is_balance_sheet': False},
+            'Net Income': {'variations': ['netIncome', 'net income', 'netincome', 'net earnings', 'profit'], 'is_balance_sheet': False},
+            'Total Assets': {'variations': ['totalAssets', 'total assets', 'assets'], 'is_balance_sheet': True},
+            'Total Liabilities': {'variations': ['totalLiabilities', 'total liabilities', 'liabilities'], 'is_balance_sheet': True}
+        }
+        
+        for metric, config in metrics_to_fetch.items():
+            series = self._get_metric_series(metric, config['variations'], config['is_balance_sheet'])
+            if not series.empty:
+                # Ensure the series is numeric
+                series = pd.to_numeric(series, errors='coerce')
+                series = series.dropna()
+                if not series.empty:
+                    trend_data[metric] = series
+                    logger.info(f"Added {metric} data: {series.dtype}")
+        
+        return trend_data
+
+    def _get_metric_series(self, metric: str, variations: List[str], is_balance_sheet: bool = False) -> pd.Series:
+        """Helper method to get historical data for a specific metric."""
+        try:
+            df = self.balance_sheet if is_balance_sheet else self.income_stmt
+            logger.info(f"Getting {metric} series from {'balance sheet' if is_balance_sheet else 'income statement'}")
+            
+            # Find matching columns
+            matching_cols = []
+            for term in variations:
+                # Try exact match first
+                exact_matches = df.columns[df.columns.str.lower() == term.lower()]
+                if not exact_matches.empty:
+                    matching_cols.extend(exact_matches)
+                    break  # Use first exact match
+                else:
+                    # Try contains match
+                    matches = df.columns[df.columns.str.lower().str.contains(term.lower())]
+                    matching_cols.extend(matches)
+            
+            if not matching_cols:
+                logger.warning(f"No matching columns found for {metric}")
+                return pd.Series([], dtype='float64')
+            
+            # Get the data
+            col_name = matching_cols[0]
+            logger.info(f"Using column {col_name} for {metric}")
+            
+            series = df[col_name].copy()
+            
+            # Convert to numeric, handling any string formatting
+            if series.dtype == object:
+                # Remove any non-numeric characters except decimal points and negative signs
+                series = series.astype(str).str.replace(r'[^\d.-]', '', regex=True)
+            
+            # Convert to numeric
+            series = pd.to_numeric(series, errors='coerce')
+            series = series.dropna()
+            
+            # Sort by index
+            series = series.sort_index()
+            
+            logger.info(f"Processed {metric} data type: {series.dtype}")
+            return series
+            
+        except Exception as e:
+            logger.error(f"Error getting metric series for {metric}: {str(e)}")
+            return pd.Series([], dtype='float64') 

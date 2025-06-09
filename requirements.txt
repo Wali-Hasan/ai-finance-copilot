@@ -1,9 +1,9 @@
 pandas==2.1.4
-yfinance==0.2.35
-alpha_vantage==2.3.1
+requests==2.32.3
 streamlit==1.29.0
 plotly==5.18.0
 openai==0.28.1
 python-dotenv==1.0.0
 numpy==1.26.2
-typing-extensions==4.9.0 
+typing-extensions==4.9.0
+matplotlib==3.8.2 
